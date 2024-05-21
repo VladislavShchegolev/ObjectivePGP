@@ -26,6 +26,8 @@ NS_SWIFT_NAME(KeyGenerator) @interface PGPKeyGenerator : NSObject
 
 - (instancetype)initWithAlgorithm:(PGPPublicKeyAlgorithm)algorithm keyBitsLength:(int)bits cipherAlgorithm:(PGPSymmetricAlgorithm)cipherAlgorithm hashAlgorithm:(PGPHashAlgorithm)hashAlgorithm;
 
++ (nullable PGPKey *)buildKey:(nullable PGPKey *)key withPassphrase:(nullable NSString *)passphrase;
+
 @end
 
 NS_ASSUME_NONNULL_END
