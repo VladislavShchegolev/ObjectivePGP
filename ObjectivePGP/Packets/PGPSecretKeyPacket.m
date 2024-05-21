@@ -30,7 +30,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface PGPSecretKeyPacket ()
 
-@property (nonatomic) BOOL wasDecrypted; // is decrypted
+//@property (nonatomic) BOOL wasDecrypted; // is decrypted
 
 @end
 

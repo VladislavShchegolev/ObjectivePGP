@@ -184,6 +184,89 @@ NS_ASSUME_NONNULL_BEGIN
     return [[PGPKey alloc] initWithSecretKey:partialSecretKey publicKey:partialPublicKey];
 }
 
++ (nullable PGPKey *)buildKey:(nullable PGPKey *)key withPassphrase:(nullable NSString *)passphrase {
+    let publicKeyPacket = PGPCast(key.publicKey.primaryKeyPacket, PGPPublicKeyPacket);
+    let secretKeyPacket = PGPCast(key.secretKey.primaryKeyPacket, PGPSecretKeyPacket);
+    
+    let publicKeyAlgorithm = publicKeyPacket.publicKeyAlgorithm;
+    let symmetricAlgorithm = secretKeyPacket.symmetricAlgorithm;
+    let hashAlgorithm = secretKeyPacket.s2k.hashAlgorithm;
+    
+    // Encrypt with passphrase
+    NSUInteger blockSize = [PGPCryptoUtils blockSizeOfSymmetricAlhorithm:symmetricAlgorithm];
+    if (!passphrase) {
+        secretKeyPacket.s2kUsage = PGPS2KUsageNonEncrypted;
+        secretKeyPacket.s2k = [[PGPS2K alloc] initWithSpecifier:PGPS2KSpecifierSimple hashAlgorithm:hashAlgorithm];
+        secretKeyPacket.ivData = [NSMutableData dataWithLength:blockSize];
+    } else {
+        secretKeyPacket.s2kUsage = PGPS2KUsageEncryptedAndHashed;
+        secretKeyPacket.wasDecrypted = NO;
+        
+        // build encryptedMPIPartData
+        let plaintextMPIPartData = [NSMutableData data];
+        for (PGPMPI *mpi in secretKeyPacket.secretMPIs) {
+            [plaintextMPIPartData pgp_appendData:[mpi exportMPI]];
+        }
+
+        switch (secretKeyPacket.s2kUsage) {
+            case PGPS2KUsageEncryptedAndHashed: {
+                // a 20-octet SHA-1 hash of the plaintext of the algorithm-specific portion
+                let hashData = plaintextMPIPartData.pgp_SHA1;
+                [plaintextMPIPartData pgp_appendData:hashData];
+            } break;
+            case PGPS2KUsageEncrypted: {
+                // a two-octet checksum of the plaintext of the algorithm-specific portion
+                UInt16 checksum = CFSwapInt16HostToBig(plaintextMPIPartData.pgp_Checksum);
+                [plaintextMPIPartData appendBytes:&checksum length:2];
+            } break;
+            default:
+                break;
+        }
+
+        let sessionKeyData = [secretKeyPacket.s2k produceSessionKeyWithPassphrase:PGPNN(passphrase)
+                                                               symmetricAlgorithm:symmetricAlgorithm];
+        if (sessionKeyData) {
+            secretKeyPacket.encryptedMPIPartData = [PGPCryptoCFB encryptData:plaintextMPIPartData
+                                                              sessionKeyData:sessionKeyData
+                                                          symmetricAlgorithm:symmetricAlgorithm
+                                                                          iv:secretKeyPacket.ivData
+                                                                     syncCFB:NO];
+        }
+    }
+
+    // Create Key
+    let partialSecretKey = [[PGPPartialKey alloc] initWithPackets:@[secretKeyPacket]];
+    let userSecret = key.secretKey.users.firstObject;
+    
+    let newKey = [[PGPKey alloc] initWithSecretKey:partialSecretKey publicKey:key.publicKey];
+    
+    newKey.secretKey.subKeys = key.secretKey.subKeys;
+    newKey.secretKey.users = @[userSecret];
+    
+    let subKey = (^{
+        if (publicKeyAlgorithm == PGPPublicKeyAlgorithmEdDSA) {
+            let spec = [[PGPKeySpec alloc] initWithKeyAlgorithm:PGPPublicKeyAlgorithmECDH
+                                                            withCurve:PGPCurve25519
+                                                    withKdfParameters:[PGPCurveKDFParameters defaultParameters]];
+            return [self addSubKeyTo:newKey passphrase:passphrase spec:spec];
+        } else {
+            return [self addSubKeyTo:newKey passphrase:passphrase];
+        }
+    })();
+    let keyGenerator = [[PGPKeyGenerator alloc] initWithAlgorithm:publicKeyAlgorithm
+                                                    keyBitsLength:2048
+                                                  cipherAlgorithm:symmetricAlgorithm
+                                                    hashAlgorithm:hashAlgorithm];
+    // Secret
+    let secretKeySignaturePacket = [keyGenerator buildSecretSignaturePacketFor:newKey];
+    userSecret.selfCertifications = @[secretKeySignaturePacket];
+    
+    let secretSubKeySignaturePacket = [keyGenerator buildSecretSignaturePacketForSubKey:subKey parentKey:newKey];
+    newKey.secretKey.subKeys.firstObject.bindingSignature = secretSubKeySignaturePacket;
+    
+    return newKey;
+}
+
 - (PGPKey *)addSubKeyTo:(PGPKey *)parentKey passphrase:(nullable NSString *)passphrase spec:(PGPKeySpec*)keySpec {
     let publicSubKeyPacket = [[PGPPublicSubKeyPacket alloc] init];
     publicSubKeyPacket.version = self.version;
@@ -255,9 +338,74 @@ NS_ASSUME_NONNULL_BEGIN
     return [[PGPKey alloc] initWithSecretKey:secretSubKey publicKey:publicSubKey];
 }
 
++ (PGPKey *)addSubKeyTo:(PGPKey *)parentKey passphrase:(nullable NSString *)passphrase spec:(PGPKeySpec*)keySpec {
+    let secretSubKeyPacket = PGPCast(parentKey.secretKey.subKeys.firstObject.primaryKeyPacket, PGPSecretSubKeyPacket);
+    
+    let symmetricAlgorithm = secretSubKeyPacket.symmetricAlgorithm;
+    let hashAlgorithm = secretSubKeyPacket.s2k.hashAlgorithm;
+    
+    // TODO: refactor duplicated code
+    NSUInteger blockSize = [PGPCryptoUtils blockSizeOfSymmetricAlhorithm:symmetricAlgorithm];
+    if (!passphrase) {
+        secretSubKeyPacket.s2kUsage = PGPS2KUsageNonEncrypted;
+        secretSubKeyPacket.s2k = [[PGPS2K alloc] initWithSpecifier:PGPS2KSpecifierSimple hashAlgorithm:hashAlgorithm];
+        secretSubKeyPacket.ivData = [NSMutableData dataWithLength:blockSize];
+    } else {
+        secretSubKeyPacket.s2kUsage = PGPS2KUsageEncryptedAndHashed;
+        secretSubKeyPacket.wasDecrypted = NO;
+        
+        // build encryptedMPIPartData
+        let plaintextMPIPartData = [NSMutableData data];
+        for (PGPMPI *mpi in secretSubKeyPacket.secretMPIs) {
+            [plaintextMPIPartData pgp_appendData:[mpi exportMPI]];
+        }
+
+        switch (secretSubKeyPacket.s2kUsage) {
+            case PGPS2KUsageEncryptedAndHashed: {
+                // a 20-octet SHA-1 hash of the plaintext of the algorithm-specific portion
+                let hashData = plaintextMPIPartData.pgp_SHA1;
+                [plaintextMPIPartData pgp_appendData:hashData];
+            } break;
+            case PGPS2KUsageEncrypted: {
+                // a two-octet checksum of the plaintext of the algorithm-specific portion
+                UInt16 checksum = CFSwapInt16HostToBig(plaintextMPIPartData.pgp_Checksum);
+                [plaintextMPIPartData appendBytes:&checksum length:2];
+            } break;
+            default:
+                break;
+        }
+
+        let sessionKeyData = [secretSubKeyPacket.s2k produceSessionKeyWithPassphrase:PGPNN(passphrase)
+                                                                  symmetricAlgorithm:symmetricAlgorithm];
+        if (sessionKeyData) {
+            secretSubKeyPacket.encryptedMPIPartData = [PGPCryptoCFB encryptData:plaintextMPIPartData
+                                                                 sessionKeyData:sessionKeyData
+                                                             symmetricAlgorithm:symmetricAlgorithm
+                                                                             iv:secretSubKeyPacket.ivData
+                                                                        syncCFB:NO];
+        }
+    }
+
+    // Create Key
+    let publicSubKey = parentKey.publicKey.subKeys.firstObject;
+    let secretSubKey = [[PGPPartialSubKey alloc] initWithPacket:secretSubKeyPacket];
+    parentKey.secretKey.subKeys = @[secretSubKey];
+    
+    let subKey = [[PGPKey alloc] initWithSecretKey:secretSubKey publicKey:publicSubKey];
+    
+    return subKey;
+}
+
 // original solution for RSA key pair
 - (PGPKey *)addSubKeyTo:(PGPKey *)parentKey passphrase:(nullable NSString *)passphrase {
     let spec = [[PGPKeySpec alloc] initWithKeyAlgorithm:self.keyAlgorithm withKeyBitsLength:3072];
+    return [self addSubKeyTo:parentKey passphrase:passphrase spec:spec];
+}
+
+// original solution for RSA key pair
++ (PGPKey *)addSubKeyTo:(PGPKey *)parentKey passphrase:(nullable NSString *)passphrase {
+    let publicKeyPacket = PGPCast(parentKey.publicKey.primaryKeyPacket, PGPPublicKeyPacket);
+    let spec = [[PGPKeySpec alloc] initWithKeyAlgorithm:publicKeyPacket.publicKeyAlgorithm withKeyBitsLength:3072];
     return [self addSubKeyTo:parentKey passphrase:passphrase spec:spec];
 }
 

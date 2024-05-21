@@ -45,6 +45,140 @@
     [super tearDown];
 }
 
+- (void)testChangeKeyPassphrase {
+    PGPKeyGenerator *keyGenerator = [[PGPKeyGenerator alloc] initWithAlgorithm:PGPPublicKeyAlgorithmRSA
+                                                    keyBitsLength:2048
+                                                  cipherAlgorithm:PGPSymmetricAES256
+                                                    hashAlgorithm:PGPHashSHA256];
+    NSError *error;
+    
+    NSString *passphrase = @"passphrase";
+    PGPKey *lockedKey = [keyGenerator generateFor:@"Peter <peter@example.com>" passphrase:passphrase];
+    PGPKey *unlockedKey = [lockedKey decryptedWithPassphrase:passphrase error:&error];
+    
+    NSData *exportedLockedPubData = [unlockedKey export:PGPKeyTypePublic error:nil];
+    NSData *exportedLockedPriData = [unlockedKey export:PGPKeyTypeSecret error:nil];
+    NSString *armLockedPub = [PGPArmor armored:exportedLockedPubData as:PGPArmorPublicKey];
+    NSString *armLockedPri = [PGPArmor armored:exportedLockedPriData as:PGPArmorSecretKey];
+    
+    NSData *readLockedPubData = [PGPArmor readArmored:armLockedPub error:nil];
+    NSData *readLockedPriData = [PGPArmor readArmored:armLockedPri error:nil];
+    PGPPartialKey *pubKey = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPubData error:nil].firstObject publicKey];
+    PGPPartialKey *priKey = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPriData error:nil].firstObject secretKey];
+    PGPKey *readLockedKey = [[PGPKey alloc] initWithSecretKey:priKey publicKey:pubKey];
+    PGPKey *readUnlockedKey = [readLockedKey decryptedWithPassphrase:passphrase error:&error];
+    
+    let dataString = @"My message";
+    let data = [dataString dataUsingEncoding:NSUTF8StringEncoding];
+    let eData = [ObjectivePGP encrypt:data
+                         addSignature:NO
+                            usingKeys:@[readLockedKey]
+                     passphraseForKey:nil
+                                error:nil];
+    
+    error = nil;
+    NSString *suffix = [NSString stringWithFormat:@"_%d", 1];
+    NSString *passphrase2 = [passphrase stringByAppendingString:suffix];
+    PGPKey *lockedKey2 = [PGPKeyGenerator buildKey:readUnlockedKey withPassphrase:passphrase2];
+    PGPKey *unlockedKey2 = [lockedKey2 decryptedWithPassphrase:passphrase2 error:&error];
+    
+    NSData *exportedLockedPubData2 = [unlockedKey2 export:PGPKeyTypePublic error:nil];
+    NSData *exportedLockedPriData2 = [unlockedKey2 export:PGPKeyTypeSecret error:nil];
+    NSString *armLockedPub2 = [PGPArmor armored:exportedLockedPubData2 as:PGPArmorPublicKey];
+    NSString *armLockedPri2 = [PGPArmor armored:exportedLockedPriData2 as:PGPArmorSecretKey];
+    
+    NSData *readLockedPubData2 = [PGPArmor readArmored:armLockedPub2 error:nil];
+    NSData *readLockedPriData2 = [PGPArmor readArmored:armLockedPri2 error:nil];
+    PGPPartialKey *pubKey2 = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPubData2 error:nil].firstObject publicKey];
+    PGPPartialKey *priKey2 = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPriData2 error:nil].firstObject secretKey];
+    PGPKey *readLockedKey2 = [[PGPKey alloc] initWithSecretKey:priKey2 publicKey:pubKey2];
+//    PGPKey *readUnlockedKey2 = [readLockedKey2 decryptedWithPassphrase:passphrase2 error:&error];
+    
+    error = nil;
+    let passphraseForKeyBlock = ^NSString * _Nullable(PGPKey * _Nonnull key) {
+        return passphrase2;
+    };
+    let dData = [ObjectivePGP decrypt:eData
+                   andVerifySignature:NO
+                            usingKeys:@[readLockedKey2]
+                     passphraseForKey: passphraseForKeyBlock
+                                error:&error];
+    let dDataString = [[NSString alloc] initWithData:dData encoding:NSUTF8StringEncoding];
+    let isEqual = [dataString isEqualToString:dDataString];
+    
+    XCTAssertTrue(isEqual);
+}
+
+- (void)testChangeKeyPassphraseInLoop {
+    PGPKeyGenerator *keyGenerator = [[PGPKeyGenerator alloc] initWithAlgorithm:PGPPublicKeyAlgorithmRSA
+                                                    keyBitsLength:2048
+                                                  cipherAlgorithm:PGPSymmetricAES256
+                                                    hashAlgorithm:PGPHashSHA256];
+    NSError *error;
+    
+    NSString *passphrase = @"passphrase";
+    PGPKey *lockedKey = [keyGenerator generateFor:@"Peter <peter@example.com>" passphrase:passphrase];
+    PGPKey *unlockedKey = [lockedKey decryptedWithPassphrase:passphrase error:&error];
+    
+    NSData *exportedLockedPubData = [unlockedKey export:PGPKeyTypePublic error:nil];
+    NSData *exportedLockedPriData = [unlockedKey export:PGPKeyTypeSecret error:nil];
+    NSString *armLockedPub = [PGPArmor armored:exportedLockedPubData as:PGPArmorPublicKey];
+    NSString *armLockedPri = [PGPArmor armored:exportedLockedPriData as:PGPArmorSecretKey];
+    
+    NSData *readLockedPubData = [PGPArmor readArmored:armLockedPub error:nil];
+    NSData *readLockedPriData = [PGPArmor readArmored:armLockedPri error:nil];
+    PGPPartialKey *pubKey = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPubData error:nil].firstObject publicKey];
+    PGPPartialKey *priKey = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPriData error:nil].firstObject secretKey];
+    PGPKey *readLockedKey = [[PGPKey alloc] initWithSecretKey:priKey publicKey:pubKey];
+    PGPKey *readUnlockedKey = [readLockedKey decryptedWithPassphrase:passphrase error:&error];
+    
+    let dataString = @"My message";
+    let data = [dataString dataUsingEncoding:NSUTF8StringEncoding];
+    let eData = [ObjectivePGP encrypt:data
+                         addSignature:NO
+                            usingKeys:@[readLockedKey]
+                     passphraseForKey:nil
+                                error:nil];
+    
+    for (int i = 0; i < 10; i++) {
+        error = nil;
+        NSString *suffix = [NSString stringWithFormat:@"_%d", i];
+        NSString *passphrase2 = [passphrase stringByAppendingString:suffix];
+        PGPKey *lockedKey2 = [PGPKeyGenerator buildKey:readUnlockedKey withPassphrase:passphrase2];
+        PGPKey *unlockedKey2 = [lockedKey2 decryptedWithPassphrase:passphrase2 error:&error];
+        
+        NSData *exportedLockedPubData2 = [unlockedKey2 export:PGPKeyTypePublic error:nil];
+        NSData *exportedLockedPriData2 = [unlockedKey2 export:PGPKeyTypeSecret error:nil];
+        NSString *armLockedPub2 = [PGPArmor armored:exportedLockedPubData2 as:PGPArmorPublicKey];
+        NSString *armLockedPri2 = [PGPArmor armored:exportedLockedPriData2 as:PGPArmorSecretKey];
+        
+        NSData *readLockedPubData2 = [PGPArmor readArmored:armLockedPub2 error:nil];
+        NSData *readLockedPriData2 = [PGPArmor readArmored:armLockedPri2 error:nil];
+        PGPPartialKey *pubKey2 = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPubData2 error:nil].firstObject publicKey];
+        PGPPartialKey *priKey2 = (PGPPartialKey * _Nonnull)[[ObjectivePGP readKeysFromData:readLockedPriData2 error:nil].firstObject secretKey];
+        PGPKey *readLockedKey2 = [[PGPKey alloc] initWithSecretKey:priKey2 publicKey:pubKey2];
+        PGPKey *readUnlockedKey2 = [readLockedKey2 decryptedWithPassphrase:passphrase2 error:&error];
+        
+        error = nil;
+        let passphraseForKeyBlock = ^NSString * _Nullable(PGPKey * _Nonnull key) {
+            return passphrase2;
+        };
+        let dData = [ObjectivePGP decrypt:eData
+                       andVerifySignature:NO
+                                usingKeys:@[readLockedKey2]
+                         passphraseForKey: passphraseForKeyBlock
+                                    error:&error];
+        let dDataString = [[NSString alloc] initWithData:dData encoding:NSUTF8StringEncoding];
+        let isEqual = [dataString isEqualToString:dDataString];
+        
+        NSLog(@"Test %d = %@", i+1, [dataString isEqualToString:dDataString] ? @"YES" : @"NO");
+        
+        readUnlockedKey = readUnlockedKey2;
+        
+        XCTAssertTrue(isEqual);
+    }
+}
+
 - (void)testGenerateNewKey {
     let keyGenerator = [[PGPKeyGenerator alloc] init];
     let key = [keyGenerator generateFor:@"Marcin <marcin@example.com>" passphrase:nil];
